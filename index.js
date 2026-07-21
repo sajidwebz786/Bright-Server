@@ -1,4 +1,8 @@
+const path = require('path');
 require('dotenv').config();
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+}
 const express = require('express');
 const cors = require('cors');
 const { sequelize } = require('./config/database');
