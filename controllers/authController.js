@@ -287,7 +287,8 @@ exports.createOrder = async (req, res) => {
     const servicesData = services || [{ serviceId, serviceAmount }];
     const totalServiceAmount = servicesData.reduce((sum, s) => sum + parseFloat(s.serviceAmount || 0), 0);
     const finalAmount = totalAmount || totalServiceAmount;
-    const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_blank', key_secret: process.env.RAZORPAY_KEY_SECRET || 'blank' });
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({ message: 'Payment gateway is not configured' });
+    const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
     const options = {
       amount: Math.round(finalAmount * 100),
       currency: 'INR',
@@ -317,13 +318,14 @@ exports.verifyPayment = async (req, res) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId, bookingId, bookingIds } = req.body;
     const body = razorpay_order_id + '|' + razorpay_payment_id;
-    const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'blank').update(body).digest('hex');
+    if (!process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({ message: 'Payment gateway is not configured' });
+    const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(body).digest('hex');
     if (expectedSignature !== razorpay_signature) return res.status(400).json({ message: 'Invalid signature' });
     const dbOrder = await Order.findByPk(orderId, { include: [{ model: Service, as: 'service' }] });
     if (!dbOrder) return res.status(404).json({ message: 'Order not found' });
     if (dbOrder.userId !== req.user.id) return res.status(403).json({ message: 'This order does not belong to your account' });
     if (dbOrder.razorpayOrderId !== razorpay_order_id) return res.status(400).json({ message: 'Order reference does not match' });
-    const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_blank', key_secret: process.env.RAZORPAY_KEY_SECRET || 'blank' });
+    const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
     let gatewayPayment = {};
     try { gatewayPayment = await razorpay.payments.fetch(razorpay_payment_id); } catch (_) { /* IDs and verified signature are still recorded. */ }
     await dbOrder.update({ status: 'paid', paidAt: new Date() });
