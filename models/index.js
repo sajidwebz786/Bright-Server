@@ -6,5 +6,6 @@ const Payment = require('./Payment');
 const Coupon = require('./Coupon');
 const Offer = require('./Offer');
 const Notification = require('./Notification');
+const Feedback = require('./Feedback');
 
-module.exports = { User, Service, Booking, Order, Payment, Coupon, Offer, Notification };
+module.exports = { User, Service, Booking, Order, Payment, Coupon, Offer, Notification, Feedback };

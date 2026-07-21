@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { authMiddleware, adminOnly } = require('../middleware/auth');
+const { authMiddleware, adminOnly, customerOnly } = require('../middleware/auth');
 const { register, login, forgotPassword, resetPassword, changePassword, getProfile } = require('../controllers/authController');
 const { body } = require('express-validator');
-const { createService, getServices, getAllServices, updateService, deleteService, createOffer, getOffers, updateOffer, deleteOffer, validateCoupon, createCoupon, updateCoupon, deleteCoupon, createBooking, createOrder, verifyPayment, getMyBookings, getAllBookings, updateBooking, getOrders, getAllOrders, getAllUsers, deactivateUser, deleteUser, sendNotification, getNotifications, markNotificationRead, getAllNotifications, getAdminDashboard } = require('../controllers/authController');
+const { createService, getServices, getAllServices, updateService, deleteService, createOffer, getOffers, updateOffer, deleteOffer, validateCoupon, createCoupon, updateCoupon, deleteCoupon, createBooking, createOrder, verifyPayment, getMyBookings, getAllBookings, updateBooking, getOrders, getAllOrders, getAllUsers, deactivateUser, deleteUser, sendNotification, getNotifications, markNotificationRead, getAllNotifications, getAdminDashboard, getCustomerDashboard, createFeedback, getFeedback, updateFeedback } = require('../controllers/authController');
 
 router.post('/register', [body('fullName').notEmpty().withMessage('Full name is required'), body('email').isEmail().withMessage('Valid email is required'), body('phone').notEmpty().withMessage('Phone is required'), body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')], register);
 router.post('/login', [body('email').isEmail().withMessage('Valid email is required'), body('password').notEmpty().withMessage('Password is required')], login);
@@ -37,14 +37,14 @@ router.post('/coupons', authMiddleware, adminOnly, createCoupon);
 router.put('/coupons/:id', authMiddleware, adminOnly, updateCoupon);
 router.delete('/coupons/:id', authMiddleware, adminOnly, deleteCoupon);
 
-router.post('/bookings', authMiddleware, createBooking);
-router.get('/bookings', authMiddleware, getAllBookings);
-router.get('/bookings/my', authMiddleware, getMyBookings);
+router.post('/bookings', authMiddleware, customerOnly, createBooking);
+router.get('/bookings', authMiddleware, adminOnly, getAllBookings);
+router.get('/bookings/my', authMiddleware, customerOnly, getMyBookings);
 router.put('/bookings/:id', authMiddleware, adminOnly, updateBooking);
 
-router.post('/orders/create', authMiddleware, createOrder);
-router.post('/orders/verify', authMiddleware, verifyPayment);
-router.get('/orders/my', authMiddleware, getOrders);
+router.post('/orders/create', authMiddleware, customerOnly, createOrder);
+router.post('/orders/verify', authMiddleware, customerOnly, verifyPayment);
+router.get('/orders/my', authMiddleware, customerOnly, getOrders);
 router.get('/orders', authMiddleware, adminOnly, getAllOrders);
 
 router.get('/users', authMiddleware, adminOnly, getAllUsers);
@@ -56,5 +56,9 @@ router.get('/notifications', authMiddleware, getNotifications);
 router.put('/notifications/:id/read', authMiddleware, markNotificationRead);
 router.get('/notifications/all', authMiddleware, adminOnly, getAllNotifications);
 router.get('/admin/dashboard', authMiddleware, adminOnly, getAdminDashboard);
+router.get('/customer/dashboard', authMiddleware, customerOnly, getCustomerDashboard);
+router.post('/feedback', createFeedback);
+router.get('/feedback', authMiddleware, adminOnly, getFeedback);
+router.put('/feedback/:id', authMiddleware, adminOnly, updateFeedback);
 
 module.exports = router;

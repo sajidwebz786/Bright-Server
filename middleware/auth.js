@@ -23,4 +23,9 @@ function adminOnly(req, res, next) {
   next();
 }
 
-module.exports = { authMiddleware, adminOnly };
+function customerOnly(req, res, next) {
+  if (req.user.isAdmin) return res.status(403).json({ message: 'Customer account required. Administrators cannot use customer bookings or orders.' });
+  next();
+}
+
+module.exports = { authMiddleware, adminOnly, customerOnly };

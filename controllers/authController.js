@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { User, Service, Coupon, Offer, Booking, Order, Payment, Notification } = require('../models');
+const { User, Service, Coupon, Offer, Booking, Order, Payment, Notification, Feedback } = require('../models');
+const { Op } = require('sequelize');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
@@ -46,12 +47,14 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, portal } = req.body;
     const user = await User.findOne({ where: { email } });
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
     if (!user.isActive) return res.status(401).json({ message: 'Account is deactivated' });
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) return res.status(401).json({ message: 'Invalid credentials' });
+    if (portal === 'admin' && !user.isAdmin) return res.status(403).json({ message: 'This account is not an administrator. Use Customer Login.' });
+    if (portal === 'customer' && user.isAdmin) return res.status(403).json({ message: 'Administrator accounts must use Admin Login.' });
     await user.update({ lastLogin: new Date() });
     const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, user: { id: user.id, fullName: user.fullName, email: user.email, phone: user.phone, isAdmin: user.isAdmin } });
@@ -312,7 +315,7 @@ exports.createOrder = async (req, res) => {
 
 exports.verifyPayment = async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId, bookingId } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderId, bookingId, bookingIds } = req.body;
     const body = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSignature = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'blank').update(body).digest('hex');
     if (expectedSignature !== razorpay_signature) return res.status(400).json({ message: 'Invalid signature' });
@@ -324,8 +327,9 @@ exports.verifyPayment = async (req, res) => {
     let gatewayPayment = {};
     try { gatewayPayment = await razorpay.payments.fetch(razorpay_payment_id); } catch (_) { /* IDs and verified signature are still recorded. */ }
     await dbOrder.update({ status: 'paid', paidAt: new Date() });
-    if (bookingId) {
-      await Booking.update({ status: 'confirmed' }, { where: { id: bookingId } });
+    const confirmedBookingIds = Array.isArray(bookingIds) && bookingIds.length ? bookingIds : (bookingId ? [bookingId] : []);
+    if (confirmedBookingIds.length) {
+      await Booking.update({ status: 'confirmed' }, { where: { id: confirmedBookingIds, userId: req.user.id } });
     }
     await Payment.create({
       orderId: dbOrder.id, userId: req.user.id, bookingId: bookingId || null,
@@ -489,8 +493,69 @@ exports.getAllNotifications = async (req, res) => {
   }
 };
 
+exports.createFeedback = async (req, res) => {
+  try {
+    const { name, email, phone, subject, message, kind } = req.body;
+    if (!name || !email || !message) return res.status(400).json({ message: 'Name, email, and message are required' });
+    const item = await Feedback.create({ name, email, phone, subject, message, kind: kind === 'feedback' ? 'feedback' : 'request' });
+    res.status(201).json({ message: 'Your message has been received', item });
+  } catch (err) {
+    res.status(500).json({ message: 'Error saving feedback', error: err.message });
+  }
+};
+
+exports.getFeedback = async (req, res) => {
+  try {
+    const items = await Feedback.findAll({ order: [['createdAt', 'DESC']], limit: 100 });
+    res.json(items);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching feedback', error: err.message });
+  }
+};
+
+exports.updateFeedback = async (req, res) => {
+  try {
+    const item = await Feedback.findByPk(req.params.id);
+    if (!item) return res.status(404).json({ message: 'Feedback item not found' });
+    await item.update({ status: req.body.status || item.status, adminNotes: req.body.adminNotes ?? item.adminNotes });
+    res.json(item);
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating feedback', error: err.message });
+  }
+};
+
+exports.getCustomerDashboard = async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const [bookings, orders, notifications] = await Promise.all([
+      Booking.findAll({ where: { userId: req.user.id }, include: [{ model: Service, as: 'service' }, { model: Order, as: 'order', include: [{ model: Payment, as: 'payment' }] }], order: [['bookingDate', 'ASC'], ['bookingTime', 'ASC']] }),
+      Order.findAll({ where: { userId: req.user.id }, include: [{ model: Service, as: 'service' }, { model: Payment, as: 'payment' }], order: [['createdAt', 'DESC']], limit: 20 }),
+      Notification.findAll({ where: { userId: req.user.id }, order: [['createdAt', 'DESC']], limit: 10 })
+    ]);
+    const upcoming = bookings.filter(item => item.bookingDate >= today && !['cancelled', 'completed', 'no_show'].includes(item.status));
+    const payments = orders.filter(item => item.payment).map(item => item.payment);
+    res.json({
+      stats: {
+        totalBookings: bookings.length,
+        upcomingBookings: upcoming.length,
+        completedBookings: bookings.filter(item => item.status === 'completed').length,
+        totalPaid: orders.filter(item => item.status === 'paid').reduce((sum, item) => sum + Number(item.totalAmount || 0), 0)
+      },
+      upcoming: upcoming.slice(0, 5),
+      recentBookings: bookings.slice(-8).reverse(),
+      orders,
+      payments,
+      notifications
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching customer dashboard', error: err.message });
+  }
+};
+
 exports.getAdminDashboard = async (req, res) => {
   try {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     const totalUsers = await User.count({ where: { isAdmin: false } });
     const totalBookings = await Booking.count();
     const totalOrders = await Order.count();
@@ -498,7 +563,15 @@ exports.getAdminDashboard = async (req, res) => {
     const pendingBookings = await Booking.count({ where: { status: 'pending' } });
     const activeOffers = await Offer.count({ where: { isActive: true } });
     const activeCoupons = await Coupon.count({ where: { isActive: true } });
-    const todayRevenue = await Order.sum('totalAmount', { where: { status: 'paid', paidAt: { [require('sequelize').Op.gte]: new Date(new Date().setHours(0,0,0,0)) } } }) || 0;
+    const todayRevenue = await Order.sum('totalAmount', { where: { status: 'paid', updatedAt: { [Op.gte]: startOfToday } } }) || 0;
+    const [todayPayments, recentOrders, newRegistrations, newBookings, alerts, feedback] = await Promise.all([
+      Payment.findAll({ where: { createdAt: { [Op.gte]: startOfToday } }, include: [{ model: User, as: 'user', attributes: ['id', 'fullName', 'email'] }, { model: Order, as: 'order' }], order: [['createdAt', 'DESC']] }),
+      Order.findAll({ include: [{ model: User, as: 'user', attributes: ['id', 'fullName', 'email', 'phone'] }, { model: Service, as: 'service' }, { model: Payment, as: 'payment' }], order: [['createdAt', 'DESC']], limit: 10 }),
+      User.findAll({ where: { isAdmin: false }, attributes: { exclude: ['password', 'resetToken', 'resetTokenExpiry'] }, order: [['createdAt', 'DESC']], limit: 10 }),
+      Booking.findAll({ include: [{ model: User, as: 'user', attributes: ['id', 'fullName', 'email', 'phone'] }, { model: Service, as: 'service' }], order: [['createdAt', 'DESC']], limit: 10 }),
+      Notification.findAll({ order: [['createdAt', 'DESC']], limit: 10 }),
+      Feedback.findAll({ order: [['createdAt', 'DESC']], limit: 10 })
+    ]);
     res.json({
       stats: {
         totalUsers: totalUsers || 0,
@@ -509,7 +582,7 @@ exports.getAdminDashboard = async (req, res) => {
         pendingBookings: pendingBookings || 0,
         activeOffers: activeOffers || 0,
         activeCoupons: activeCoupons || 0
-      }
+      }, todayPayments, recentOrders, newRegistrations, newBookings, alerts, feedback
     });
   } catch (err) {
     res.status(500).json({ message: 'Error fetching dashboard', error: err.message });

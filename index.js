@@ -10,19 +10,26 @@ const { sequelize } = require('./config/database');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:5173',
-  process.env.FRONTEND_URL_ALT || 'http://localhost:5174',
+const configuredOrigins = [process.env.FRONTEND_URL, process.env.FRONTEND_URL_ALT, process.env.FRONTEND_URLS]
+  .filter(Boolean)
+  .flatMap(value => value.split(',').map(origin => origin.trim()));
+const allowedOrigins = new Set([
+  ...configuredOrigins,
+  'https://brightsoulspa.in',
+  'https://www.brightsoulspa.in',
+  'http://localhost:5173',
+  'http://localhost:5174',
   'http://127.0.0.1:5173',
   'http://127.0.0.1:5174'
-];
+]);
 
 app.use(cors({ origin: (origin, callback) => {
-  if (!origin || allowedOrigins.includes(origin)) {
+  if (!origin || allowedOrigins.has(origin)) {
     return callback(null, true);
   }
   callback(new Error(`CORS origin denied: ${origin}`));
 }, credentials: true }));
+app.options('*', cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
