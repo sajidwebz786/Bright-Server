@@ -11,7 +11,7 @@ const { User, Service, Coupon, Offer } = require('./models');
     const userPassword = await bcrypt.hash('user123', 10);
 
     await User.bulkCreate([
-      { fullName: 'Admin User', email: 'admin@brightsoul.com', phone: '+919876543210', password: adminPassword, isAdmin: true },
+      { fullName: 'Admin User', email: 'admin@brightsoulspa.in', phone: '+918095555958', password: adminPassword, isAdmin: true },
       { fullName: 'John Doe', email: 'john@example.com', phone: '+919876543211', password: userPassword, isAdmin: false },
       { fullName: 'Jane Smith', email: 'jane@example.com', phone: '+919876543212', password: userPassword, isAdmin: false },
       { fullName: 'Bob Wilson', email: 'bob@example.com', phone: '+919876543213', password: userPassword, isAdmin: false }
