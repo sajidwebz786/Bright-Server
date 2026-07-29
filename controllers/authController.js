@@ -270,7 +270,7 @@ exports.createBooking = async (req, res) => {
     } = req.body;
     const service = await Service.findByPk(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
-    const allowedOffers = ['standard', 'welcome_swedish', 'senior_wellness', 'ladies_25'];
+    const allowedOffers = ['standard', 'welcome_swedish', 'senior_wellness', 'women_25'];
     if (!allowedOffers.includes(offerType)) return res.status(400).json({ message: 'Invalid offer selected' });
     const hour = Number(String(bookingTime).split(':')[0]);
     if (offerType === 'senior_wellness' && (hour < 10 || hour > 17)) {
@@ -298,7 +298,7 @@ exports.createBooking = async (req, res) => {
     let payableAmount = service.isOffer && service.offerPrice ? Number(service.offerPrice) : baseAmount;
     if (offerType === 'welcome_swedish') payableAmount = 1800;
     if (offerType === 'senior_wellness') payableAmount = 0;
-    if (offerType === 'ladies_25') payableAmount = Math.round(baseAmount * 0.75);
+    if (offerType === 'women_25') payableAmount = Math.round(baseAmount * 0.75);
     const discountAmount = Math.max(0, originalAmount - payableAmount);
 
     let status = 'pending';

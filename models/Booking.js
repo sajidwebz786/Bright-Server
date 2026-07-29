@@ -62,7 +62,7 @@ const Booking = db.sequelize.define('Booking', {
     type: db.Sequelize.DATEONLY
   },
   offerType: {
-    type: db.Sequelize.ENUM('standard', 'welcome_swedish', 'senior_wellness', 'ladies_25'),
+    type: db.Sequelize.ENUM('standard', 'welcome_swedish', 'senior_wellness', 'women_25'),
     defaultValue: 'standard'
   },
   originalAmount: {
