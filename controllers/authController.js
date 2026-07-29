@@ -263,17 +263,63 @@ exports.deleteCoupon = async (req, res) => {
 
 exports.createBooking = async (req, res) => {
   try {
-    const { serviceId, bookingDate, bookingTime, numberOfPeople, specialRequests, customerName, customerEmail, customerPhone, notes } = req.body;
+    const {
+      serviceId, bookingDate, bookingTime, numberOfPeople, specialRequests, customerName,
+      customerEmail, customerPhone, notes, offerType = 'standard', alternatePhone,
+      customerAddress, caretakerName, caretakerPhone, dateOfBirth, aadhaarDocument, customerPhoto
+    } = req.body;
     const service = await Service.findByPk(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
-    const existingBooking = await Booking.findOne({ where: { serviceId, bookingDate, bookingTime } });
-    if (existingBooking) return res.status(400).json({ message: 'This time slot is already booked' });
+    const allowedOffers = ['standard', 'welcome_swedish', 'senior_wellness', 'ladies_25'];
+    if (!allowedOffers.includes(offerType)) return res.status(400).json({ message: 'Invalid offer selected' });
+    const hour = Number(String(bookingTime).split(':')[0]);
+    if (offerType === 'senior_wellness' && (hour < 10 || hour > 17)) {
+      return res.status(400).json({ message: 'Senior wellness appointments are available from 10:00 AM to 5:00 PM only.' });
+    }
+    if (offerType === 'welcome_swedish' && !(service.category === 'Swedish Massage' && Number(service.duration) === 60)) {
+      return res.status(400).json({ message: 'The ₹1,800 welcome offer is valid only on the 60-minute Swedish Massage.' });
+    }
+    if (offerType === 'senior_wellness') {
+      if (!alternatePhone || !customerAddress || !caretakerName || !caretakerPhone || !dateOfBirth || !aadhaarDocument || !customerPhoto) {
+        return res.status(400).json({ message: 'Senior bookings require date of birth, Aadhaar, photo, address, alternate phone, and caretaker details.' });
+      }
+      const dob = new Date(`${dateOfBirth}T00:00:00`);
+      const appointment = new Date(`${bookingDate}T00:00:00`);
+      let age = appointment.getFullYear() - dob.getFullYear();
+      const birthdayPending = appointment.getMonth() < dob.getMonth() || (appointment.getMonth() === dob.getMonth() && appointment.getDate() < dob.getDate());
+      if (birthdayPending) age -= 1;
+      if (!Number.isFinite(age) || age < 65) return res.status(400).json({ message: 'The senior wellness offer is available only to guests aged 65 or above on the appointment date.' });
+    }
+    const duplicate = await Booking.findOne({ where: { serviceId, bookingDate, bookingTime, status: { [Op.notIn]: ['cancelled', 'no_show'] } } });
+    if (duplicate) return res.status(400).json({ message: 'This time slot is already booked' });
+
+    const baseAmount = Number(service.price || 0);
+    const originalAmount = baseAmount;
+    let payableAmount = service.isOffer && service.offerPrice ? Number(service.offerPrice) : baseAmount;
+    if (offerType === 'welcome_swedish') payableAmount = 1800;
+    if (offerType === 'senior_wellness') payableAmount = 0;
+    if (offerType === 'ladies_25') payableAmount = Math.round(baseAmount * 0.75);
+    const discountAmount = Math.max(0, originalAmount - payableAmount);
+
+    let status = 'pending';
+    let waitlistPosition = null;
+    if (offerType === 'senior_wellness') {
+      const seniorCount = await Booking.count({
+        where: { bookingDate, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show'] } }
+      });
+      if (seniorCount >= 5) {
+        status = 'waitlisted';
+        waitlistPosition = seniorCount - 4;
+      }
+    }
     const booking = await Booking.create({
       userId: req.user.id, serviceId, bookingDate, bookingTime, numberOfPeople, specialRequests,
       customerName: customerName || req.user.fullName,
       customerEmail: customerEmail || req.user.email,
       customerPhone: customerPhone || req.user.phone,
-      notes, status: 'pending'
+      alternatePhone, customerAddress, caretakerName, caretakerPhone, dateOfBirth,
+      aadhaarDocument, customerPhoto, offerType, originalAmount, discountAmount, payableAmount,
+      waitlistPosition, notes, status
     });
     res.status(201).json(booking);
   } catch (err) {
@@ -284,9 +330,12 @@ exports.createBooking = async (req, res) => {
 exports.createOrder = async (req, res) => {
   try {
     const { bookingId, serviceId, couponId, offerId, couponCode, serviceAmount, discountAmount, totalAmount, services } = req.body;
+    const booking = bookingId ? await Booking.findOne({ where: { id: bookingId, userId: req.user.id } }) : null;
+    if (bookingId && !booking) return res.status(404).json({ message: 'Booking not found' });
     const servicesData = services || [{ serviceId, serviceAmount }];
-    const totalServiceAmount = servicesData.reduce((sum, s) => sum + parseFloat(s.serviceAmount || 0), 0);
-    const finalAmount = totalAmount || totalServiceAmount;
+    const totalServiceAmount = booking ? Number(booking.originalAmount) : servicesData.reduce((sum, s) => sum + parseFloat(s.serviceAmount || 0), 0);
+    const finalAmount = booking ? Number(booking.payableAmount) : Number(totalAmount || totalServiceAmount);
+    if (finalAmount < 1) return res.status(400).json({ message: 'No payment is required for this booking.' });
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({ message: 'Payment gateway is not configured' });
     const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
     const options = {
@@ -299,7 +348,7 @@ exports.createOrder = async (req, res) => {
     const dbOrder = await Order.create({
       orderId: order.receipt, userId: req.user.id, bookingId, serviceId,
       servicesJson: JSON.stringify(servicesData), serviceAmount: totalServiceAmount,
-      discountAmount: discountAmount || 0, couponCode: couponCode || null, offerId: offerId || null,
+      discountAmount: booking ? Number(booking.discountAmount) : (discountAmount || 0), couponCode: couponCode || null, offerId: offerId || null,
       totalAmount: finalAmount, razorpayOrderId: order.id, status: 'pending'
     });
     if (couponId) {

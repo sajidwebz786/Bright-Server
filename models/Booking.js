@@ -32,7 +32,7 @@ const Booking = db.sequelize.define('Booking', {
     type: db.Sequelize.TEXT
   },
   status: {
-    type: db.Sequelize.ENUM('pending', 'confirmed', 'cancelled', 'completed', 'no_show'),
+    type: db.Sequelize.ENUM('pending', 'waitlisted', 'confirmed', 'cancelled', 'completed', 'no_show'),
     defaultValue: 'pending'
   },
   customerName: {
@@ -45,6 +45,44 @@ const Booking = db.sequelize.define('Booking', {
   customerPhone: {
     type: db.Sequelize.STRING,
     allowNull: false
+  },
+  alternatePhone: {
+    type: db.Sequelize.STRING
+  },
+  customerAddress: {
+    type: db.Sequelize.TEXT
+  },
+  caretakerName: {
+    type: db.Sequelize.STRING
+  },
+  caretakerPhone: {
+    type: db.Sequelize.STRING
+  },
+  dateOfBirth: {
+    type: db.Sequelize.DATEONLY
+  },
+  offerType: {
+    type: db.Sequelize.ENUM('standard', 'welcome_swedish', 'senior_wellness', 'ladies_25'),
+    defaultValue: 'standard'
+  },
+  originalAmount: {
+    type: db.Sequelize.FLOAT
+  },
+  discountAmount: {
+    type: db.Sequelize.FLOAT,
+    defaultValue: 0
+  },
+  payableAmount: {
+    type: db.Sequelize.FLOAT
+  },
+  waitlistPosition: {
+    type: db.Sequelize.INTEGER
+  },
+  aadhaarDocument: {
+    type: db.Sequelize.TEXT
+  },
+  customerPhoto: {
+    type: db.Sequelize.TEXT
   },
   notes: {
     type: db.Sequelize.TEXT

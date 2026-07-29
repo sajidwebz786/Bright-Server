@@ -19,7 +19,7 @@ const { User, Service, Coupon, Offer } = require('./models');
 
     const services = [
       { name: 'Swedish Massage - 45 min', description: 'A classic and deeply relaxing body massage with medium pressure and flowing strokes.', category: 'Swedish Massage', duration: 45, price: 1999, image: '' },
-      { name: 'Swedish Massage - 60 min', description: 'Extended Swedish massage for deeper relaxation and stress relief.', category: 'Swedish Massage', duration: 60, price: 2499, isOffer: true, offerPrice: 1500, image: '' },
+      { name: 'Swedish Massage - 60 min', description: 'Extended Swedish massage for deeper relaxation and stress relief.', category: 'Swedish Massage', duration: 60, price: 2499, isOffer: true, offerPrice: 1800, image: '' },
       { name: 'Swedish Massage - 90 min', description: 'Ultimate Swedish massage experience for complete relaxation.', category: 'Swedish Massage', duration: 90, price: 3699, image: '' },
       { name: 'Swedish Massage - 120 min', description: 'Extended session for the ultimate relaxation experience.', category: 'Swedish Massage', duration: 120, price: 4999, image: '' },
       { name: 'Aromatherapy Massage - 45 min', description: 'A soothing massage with therapeutic essential oils (olive or almond oil).', category: 'Aromatherapy Massage', duration: 45, price: 2499, image: '' },
@@ -52,7 +52,7 @@ const { User, Service, Coupon, Offer } = require('./models');
     ], { ignoreDuplicates: true });
 
     await Offer.bulkCreate([
-      { title: 'First Registration Offer', description: '60-minute Swedish Massage exclusive offer for first-time users. T&C apply.', discountType: 'fixed', discountValue: 999, originalPrice: 2499, offerPrice: 1500, validFrom: '2024-01-01', validTo: '2026-12-31', isActive: true, usageLimit: 100 },
+      { title: 'New Guest Glow', description: '60-minute Swedish Massage exclusive offer for first-time guests. T&C apply.', discountType: 'fixed', discountValue: 699, originalPrice: 2499, offerPrice: 1800, validFrom: '2024-01-01', validTo: '2026-12-31', isActive: true, usageLimit: 100 },
       { title: 'Couples Retreat Package', description: 'Save big on couples massage sessions together', discountType: 'percentage', discountValue: 20, originalPrice: 4999, offerPrice: 3999, validFrom: '2024-01-01', validTo: '2026-12-31', isActive: true, usageLimit: 50 },
       { title: 'VIP Jacuzzi Deal', description: 'Special offer on VIP Jacuzzi treatment', discountType: 'fixed', discountValue: 1000, originalPrice: 7000, offerPrice: 6000, validFrom: '2024-06-01', validTo: '2025-12-31', isActive: true, usageLimit: 30 }
     ], { ignoreDuplicates: true });

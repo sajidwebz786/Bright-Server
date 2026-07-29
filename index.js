@@ -30,8 +30,8 @@ app.use(cors({ origin: (origin, callback) => {
   callback(new Error(`CORS origin denied: ${origin}`));
 }, credentials: true }));
 app.options('*', cors({ origin: (origin, callback) => callback(null, !origin || allowedOrigins.has(origin)), credentials: true }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '12mb' }));
+app.use(express.urlencoded({ extended: true, limit: '12mb' }));
 
 require('./models');
 require('./models/associations')();
