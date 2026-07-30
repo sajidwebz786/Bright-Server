@@ -38,6 +38,10 @@ const Service = db.sequelize.define('Service', {
   },
   offerPrice: {
     type: db.Sequelize.FLOAT
+  },
+  visibilityEmail: {
+    type: db.Sequelize.STRING,
+    allowNull: true
   }
 }, {
   tableName: 'services',

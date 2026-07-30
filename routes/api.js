@@ -3,7 +3,7 @@ const router = express.Router();
 const { authMiddleware, adminOnly, customerOnly } = require('../middleware/auth');
 const { register, login, forgotPassword, resetPassword, changePassword, getProfile } = require('../controllers/authController');
 const { body } = require('express-validator');
-const { createService, getServices, getAllServices, updateService, deleteService, createOffer, getOffers, updateOffer, deleteOffer, getOfferControls, updateOfferControl, getSeniorAvailability, validateCoupon, createCoupon, updateCoupon, deleteCoupon, createBooking, createOrder, verifyPayment, getMyBookings, getAllBookings, selectWaitlistSlot, updateBooking, getOrders, getAllOrders, getAllUsers, deactivateUser, deleteUser, sendNotification, getNotifications, markNotificationRead, getAllNotifications, getAdminDashboard, getCustomerDashboard, createFeedback, getFeedback, updateFeedback } = require('../controllers/authController');
+const { createService, getServices, getPaymentTestService, getAllServices, updateService, deleteService, createOffer, getOffers, updateOffer, deleteOffer, getOfferControls, updateOfferControl, getSeniorAvailability, validateCoupon, createCoupon, updateCoupon, deleteCoupon, createBooking, createOrder, verifyPayment, getMyBookings, getAllBookings, selectWaitlistSlot, updateBooking, getOrders, getAllOrders, getAllUsers, deactivateUser, deleteUser, sendNotification, getNotifications, markNotificationRead, getAllNotifications, getAdminDashboard, getCustomerDashboard, createFeedback, getFeedback, updateFeedback } = require('../controllers/authController');
 
 router.post('/register', [body('fullName').notEmpty().withMessage('Full name is required'), body('email').isEmail().withMessage('Valid email is required'), body('phone').notEmpty().withMessage('Phone is required'), body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')], register);
 router.post('/login', [body('email').isEmail().withMessage('Valid email is required'), body('password').notEmpty().withMessage('Password is required')], login);
@@ -13,6 +13,7 @@ router.put('/change-password', authMiddleware, [body('oldPassword').notEmpty(), 
 router.get('/profile', authMiddleware, getProfile);
 
 router.get('/services', getServices);
+router.get('/services/payment-test', authMiddleware, customerOnly, getPaymentTestService);
 router.get('/services/all', authMiddleware, adminOnly, getAllServices);
 router.post('/services', authMiddleware, adminOnly, createService);
 router.put('/services/:id', authMiddleware, adminOnly, updateService);

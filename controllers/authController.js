@@ -8,6 +8,8 @@ const nodemailer = require('nodemailer');
 const { sendPaymentWhatsAppNotifications } = require('../services/whatsapp');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'brightsoul-secret-2026';
+const PAYMENT_TEST_EMAIL = 'sajidwebz@gmail.com';
+const PAYMENT_TEST_SERVICE_NAME = 'Payment Gateway Test Therapy — ₹5';
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -249,10 +251,38 @@ exports.createService = async (req, res) => {
 
 exports.getServices = async (req, res) => {
   try {
-    const services = await Service.findAll({ where: { isActive: true }, order: [['category', 'ASC'], ['duration', 'ASC']] });
+    const services = await Service.findAll({ where: { isActive: true, visibilityEmail: null }, order: [['category', 'ASC'], ['duration', 'ASC']] });
     res.json(services);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching services', error: err.message });
+  }
+};
+
+exports.getPaymentTestService = async (req, res) => {
+  try {
+    if (String(req.user.email || '').toLowerCase() !== PAYMENT_TEST_EMAIL) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+    const [service] = await Service.findOrCreate({
+      where: { name: PAYMENT_TEST_SERVICE_NAME },
+      defaults: {
+        description: 'Private ₹5 therapy used only to verify the live payment gateway. This is not a redeemable spa treatment.',
+        category: 'Private Payment Test',
+        duration: 5,
+        price: 5,
+        isActive: true,
+        isOffer: false,
+        offerPrice: null,
+        visibilityEmail: PAYMENT_TEST_EMAIL,
+        image: '/images/logo.png'
+      }
+    });
+    if (Number(service.price) !== 5 || !service.isActive || service.visibilityEmail !== PAYMENT_TEST_EMAIL) {
+      await service.update({ price: 5, offerPrice: null, isOffer: false, isActive: true, visibilityEmail: PAYMENT_TEST_EMAIL });
+    }
+    res.json(service);
+  } catch (err) {
+    res.status(500).json({ message: 'Error preparing payment test service', error: err.message });
   }
 };
 
@@ -393,6 +423,9 @@ exports.createBooking = async (req, res) => {
     } = req.body;
     const service = await Service.findByPk(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
+    if (service.visibilityEmail && String(req.user.email || '').toLowerCase() !== String(service.visibilityEmail).toLowerCase()) {
+      return res.status(403).json({ message: 'This private payment test is not available for this account.' });
+    }
     const allowedOffers = ['standard', 'welcome_swedish', 'senior_wellness', 'women_25'];
     if (!allowedOffers.includes(offerType)) return res.status(400).json({ message: 'Invalid offer selected' });
     const hour = Number(String(bookingTime).split(':')[0]);
@@ -472,6 +505,14 @@ exports.createBooking = async (req, res) => {
 exports.createOrder = async (req, res) => {
   try {
     const { bookingId, serviceId, couponId, offerId, couponCode, serviceAmount, discountAmount, totalAmount, services } = req.body;
+    const requestedServiceIds = [...new Set([serviceId, ...(services || []).map(item => item.serviceId)].filter(Boolean))];
+    if (requestedServiceIds.length) {
+      const requestedServices = await Service.findAll({ where: { id: requestedServiceIds } });
+      const unauthorizedPrivateService = requestedServices.find(service =>
+        service.visibilityEmail && String(req.user.email || '').toLowerCase() !== String(service.visibilityEmail).toLowerCase()
+      );
+      if (unauthorizedPrivateService) return res.status(403).json({ message: 'A private service in this order is not available for this account.' });
+    }
     const booking = bookingId ? await Booking.findOne({ where: { id: bookingId, userId: req.user.id } }) : null;
     if (bookingId && !booking) return res.status(404).json({ message: 'Booking not found' });
     const servicesData = services || [{ serviceId, serviceAmount }];
