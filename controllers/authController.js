@@ -1,10 +1,11 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { User, Service, Coupon, Offer, Booking, Order, Payment, Notification, Feedback } = require('../models');
+const { User, Service, Coupon, Offer, Booking, Order, Payment, Notification, Feedback, OfferControl } = require('../models');
 const { Op } = require('sequelize');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { sendPaymentWhatsAppNotifications } = require('../services/whatsapp');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'brightsoul-secret-2026';
 
@@ -28,6 +29,128 @@ async function sendNotificationEmail(email, subject, html) {
 function generateOrderId() {
   return 'BS' + Date.now() + Math.floor(Math.random() * 1000);
 }
+
+const defaultOfferControls = [
+  {
+    offerType: 'welcome_swedish',
+    title: 'New Guest Offer — ₹1,800',
+    details: '60-minute Swedish Massage for first-time guests.',
+    dailyCapacity: 20, startHour: 10, endHour: 20, slotIntervalMinutes: 60, suggestionDays: 7
+  },
+  {
+    offerType: 'senior_wellness',
+    title: 'Senior Citizens Offer — Free',
+    details: 'Complimentary massage for first-time guests aged 65 and above.',
+    dailyCapacity: 5, startHour: 10, endHour: 17, slotIntervalMinutes: 60, suggestionDays: 14
+  },
+  {
+    offerType: 'women_25',
+    title: 'Women’s Wellness Offer — 25% Off',
+    details: '25% off massage services for women.',
+    dailyCapacity: 20, startHour: 10, endHour: 20, slotIntervalMinutes: 60, suggestionDays: 7
+  }
+];
+
+async function ensureOfferControls() {
+  await Promise.all(defaultOfferControls.map(control =>
+    OfferControl.findOrCreate({ where: { offerType: control.offerType }, defaults: control })
+  ));
+}
+
+async function getOfferControl(offerType) {
+  await ensureOfferControls();
+  return OfferControl.findOne({ where: { offerType } });
+}
+
+function dateOnly(value) {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function addDays(value, days) {
+  const date = dateOnly(value);
+  date.setDate(date.getDate() + days);
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0')
+  ].join('-');
+}
+
+async function getSuggestedSeniorSlots(afterDate, control) {
+  const startDate = addDays(afterDate, 1);
+  const endDate = addDays(afterDate, Math.max(1, Number(control.suggestionDays || 14)));
+  const bookings = await Booking.findAll({
+    where: {
+      offerType: 'senior_wellness',
+      bookingDate: { [Op.between]: [startDate, endDate] },
+      status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] }
+    },
+    attributes: ['bookingDate', 'bookingTime']
+  });
+  const occupied = new Map();
+  bookings.forEach(item => {
+    const date = String(item.bookingDate);
+    if (!occupied.has(date)) occupied.set(date, []);
+    occupied.get(date).push(String(item.bookingTime).slice(0, 5));
+  });
+  const suggestions = [];
+  for (let day = 1; day <= Number(control.suggestionDays || 14) && suggestions.length < 12; day += 1) {
+    const date = addDays(afterDate, day);
+    const used = occupied.get(date) || [];
+    if (used.length >= Number(control.dailyCapacity)) continue;
+    for (let minutes = Number(control.startHour) * 60; minutes <= Number(control.endHour) * 60; minutes += Number(control.slotIntervalMinutes || 60)) {
+      const time = `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+      if (!used.includes(time)) suggestions.push({ date, time });
+      if (suggestions.length >= 12) break;
+    }
+  }
+  return suggestions;
+}
+
+exports.getOfferControls = async (_req, res) => {
+  try {
+    await ensureOfferControls();
+    res.json(await OfferControl.findAll({ order: [['id', 'ASC']] }));
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching offer controls', error: err.message });
+  }
+};
+
+exports.updateOfferControl = async (req, res) => {
+  try {
+    const control = await getOfferControl(req.params.offerType);
+    if (!control) return res.status(404).json({ message: 'Offer control not found' });
+    const allowed = ['title', 'details', 'dailyCapacity', 'startHour', 'endHour', 'slotIntervalMinutes', 'suggestionDays', 'isActive'];
+    const updates = Object.fromEntries(allowed.filter(key => req.body[key] !== undefined).map(key => [key, req.body[key]]));
+    if (Number(updates.dailyCapacity || control.dailyCapacity) < 1) return res.status(400).json({ message: 'Daily capacity must be at least 1' });
+    if (Number(updates.endHour ?? control.endHour) < Number(updates.startHour ?? control.startHour)) return res.status(400).json({ message: 'End hour must be after start hour' });
+    await control.update(updates);
+    res.json(control);
+  } catch (err) {
+    res.status(500).json({ message: 'Error updating offer control', error: err.message });
+  }
+};
+
+exports.getSeniorAvailability = async (req, res) => {
+  try {
+    const control = await getOfferControl('senior_wellness');
+    const date = req.query.date || new Date().toISOString().slice(0, 10);
+    const booked = await Booking.count({
+      where: { bookingDate: date, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } }
+    });
+    res.json({
+      date,
+      capacity: control.dailyCapacity,
+      booked,
+      remaining: Math.max(0, Number(control.dailyCapacity) - booked),
+      full: booked >= Number(control.dailyCapacity),
+      availableSlots: booked >= Number(control.dailyCapacity) ? await getSuggestedSeniorSlots(date, control) : []
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error checking senior availability', error: err.message });
+  }
+};
 
 exports.register = async (req, res) => {
   try {
@@ -273,8 +396,10 @@ exports.createBooking = async (req, res) => {
     const allowedOffers = ['standard', 'welcome_swedish', 'senior_wellness', 'women_25'];
     if (!allowedOffers.includes(offerType)) return res.status(400).json({ message: 'Invalid offer selected' });
     const hour = Number(String(bookingTime).split(':')[0]);
-    if (offerType === 'senior_wellness' && (hour < 10 || hour > 17)) {
-      return res.status(400).json({ message: 'Senior wellness appointments are available from 10:00 AM to 5:00 PM only.' });
+    const offerControl = offerType !== 'standard' ? await getOfferControl(offerType) : null;
+    if (offerControl && !offerControl.isActive) return res.status(400).json({ message: 'This offer is currently paused by the spa.' });
+    if (offerType === 'senior_wellness' && (hour < Number(offerControl.startHour) || hour > Number(offerControl.endHour))) {
+      return res.status(400).json({ message: `Senior wellness appointments are available from ${offerControl.startHour}:00 to ${offerControl.endHour}:00 only.` });
     }
     if (offerType === 'welcome_swedish' && !(service.category === 'Swedish Massage' && Number(service.duration) === 60)) {
       return res.status(400).json({ message: 'The ₹1,800 welcome offer is valid only on the 60-minute Swedish Massage.' });
@@ -290,8 +415,13 @@ exports.createBooking = async (req, res) => {
       if (birthdayPending) age -= 1;
       if (!Number.isFinite(age) || age < 65) return res.status(400).json({ message: 'The senior wellness offer is available only to guests aged 65 or above on the appointment date.' });
     }
-    const duplicate = await Booking.findOne({ where: { serviceId, bookingDate, bookingTime, status: { [Op.notIn]: ['cancelled', 'no_show'] } } });
-    if (duplicate) return res.status(400).json({ message: 'This time slot is already booked' });
+    const duplicate = await Booking.findOne({ where: { serviceId, bookingDate, bookingTime, status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } } });
+    if (duplicate) {
+      const seniorDayIsFull = offerType === 'senior_wellness' && await Booking.count({
+        where: { bookingDate, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } }
+      }) >= Number(offerControl.dailyCapacity);
+      if (!seniorDayIsFull) return res.status(400).json({ message: 'This time slot is already booked' });
+    }
 
     const baseAmount = Number(service.price || 0);
     const originalAmount = baseAmount;
@@ -305,11 +435,14 @@ exports.createBooking = async (req, res) => {
     let waitlistPosition = null;
     if (offerType === 'senior_wellness') {
       const seniorCount = await Booking.count({
-        where: { bookingDate, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show'] } }
+        where: { bookingDate, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } }
       });
-      if (seniorCount >= 5) {
+      if (seniorCount >= Number(offerControl.dailyCapacity)) {
         status = 'waitlisted';
-        waitlistPosition = seniorCount - 4;
+        const waitlistCount = await Booking.count({
+          where: { bookingDate, offerType: 'senior_wellness', status: 'waitlisted' }
+        });
+        waitlistPosition = waitlistCount + 1;
       }
     }
     const booking = await Booking.create({
@@ -321,6 +454,15 @@ exports.createBooking = async (req, res) => {
       aadhaarDocument, customerPhoto, offerType, originalAmount, discountAmount, payableAmount,
       waitlistPosition, notes, status
     });
+    if (status === 'waitlisted') {
+      const availableSlots = await getSuggestedSeniorSlots(bookingDate, offerControl);
+      return res.status(201).json({
+        ...booking.toJSON(),
+        capacityFull: true,
+        availableSlots,
+        message: `Thank you for choosing Bright Soul Spa. The ${offerControl.dailyCapacity} complimentary senior appointments for ${bookingDate} are now filled. Please select one of the next available dates and times below at your convenience.`
+      });
+    }
     res.status(201).json(booking);
   } catch (err) {
     res.status(500).json({ message: 'Error creating booking', error: err.message });
@@ -382,7 +524,7 @@ exports.verifyPayment = async (req, res) => {
     if (confirmedBookingIds.length) {
       await Booking.update({ status: 'confirmed' }, { where: { id: confirmedBookingIds, userId: req.user.id } });
     }
-    await Payment.create({
+    const payment = await Payment.create({
       orderId: dbOrder.id, userId: req.user.id, bookingId: bookingId || null,
       razorpayPaymentId: razorpay_payment_id, razorpayOrderId: razorpay_order_id, razorpaySignature: razorpay_signature,
       amount: dbOrder.totalAmount, currency: gatewayPayment.currency || dbOrder.currency || 'INR',
@@ -392,7 +534,44 @@ exports.verifyPayment = async (req, res) => {
       fee: gatewayPayment.fee ? gatewayPayment.fee / 100 : null, tax: gatewayPayment.tax ? gatewayPayment.tax / 100 : null,
       capturedAt: new Date()
     });
-    res.json({ message: 'Payment verified successfully', order: dbOrder });
+    const confirmedBookings = confirmedBookingIds.length
+      ? await Booking.findAll({
+          where: { id: confirmedBookingIds, userId: req.user.id },
+          include: [{ model: Service, as: 'service' }],
+          order: [['bookingDate', 'ASC'], ['bookingTime', 'ASC']]
+        })
+      : [];
+    let purchasedServices = [];
+    try {
+      purchasedServices = JSON.parse(dbOrder.servicesJson || '[]');
+    } catch (_) {
+      purchasedServices = [];
+    }
+    const serviceNames = purchasedServices.map(item => item.name).filter(Boolean);
+    if (!serviceNames.length && dbOrder.service?.name) serviceNames.push(dbOrder.service.name);
+    confirmedBookings.forEach(item => {
+      if (item.service?.name && !serviceNames.includes(item.service.name)) serviceNames.push(item.service.name);
+    });
+    const customerPhone = confirmedBookings[0]?.customerPhone || gatewayPayment.contact || req.user.phone;
+    const appointmentLines = confirmedBookings.map(item =>
+      `${item.service?.name || 'Spa service'} — ${item.bookingDate} at ${String(item.bookingTime).slice(0, 5)}`
+    );
+    const paymentMessage = [
+      'Bright Soul Spa & Salon',
+      'Payment and purchase confirmation',
+      '',
+      `Customer: ${req.user.fullName}`,
+      `Service${serviceNames.length === 1 ? '' : 's'}: ${serviceNames.join(', ') || 'Spa service'}`,
+      `Amount paid: ₹${Number(dbOrder.totalAmount).toLocaleString('en-IN')}`,
+      `Payment method: ${payment.method || 'Razorpay'}`,
+      `Payment ID: ${razorpay_payment_id}`,
+      `Order ID: ${dbOrder.orderId}`,
+      ...(appointmentLines.length ? ['', 'Appointment details:', ...appointmentLines] : []),
+      '',
+      'Your payment was successful and your booking is confirmed. Thank you for choosing Bright Soul Spa.'
+    ].join('\n');
+    const whatsapp = await sendPaymentWhatsAppNotifications({ customerPhone, message: paymentMessage });
+    res.json({ message: 'Payment verified successfully', order: dbOrder, whatsapp });
   } catch (err) {
     res.status(500).json({ message: 'Error verifying payment', error: err.message });
   }
@@ -420,12 +599,50 @@ exports.getAllBookings = async (req, res) => {
   }
 };
 
+exports.selectWaitlistSlot = async (req, res) => {
+  try {
+    const booking = await Booking.findOne({ where: { id: req.params.id, userId: req.user.id } });
+    if (!booking) return res.status(404).json({ message: 'Waitlist booking not found' });
+    if (booking.offerType !== 'senior_wellness' || booking.status !== 'waitlisted') {
+      return res.status(400).json({ message: 'This booking is not awaiting a senior waitlist slot' });
+    }
+    const { bookingDate, bookingTime } = req.body;
+    const control = await getOfferControl('senior_wellness');
+    const booked = await Booking.count({
+      where: { bookingDate, offerType: 'senior_wellness', status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } }
+    });
+    if (booked >= Number(control.dailyCapacity)) {
+      return res.status(409).json({
+        message: 'That date has just filled. Please choose another available slot.',
+        availableSlots: await getSuggestedSeniorSlots(bookingDate, control)
+      });
+    }
+    const duplicate = await Booking.findOne({
+      where: { serviceId: booking.serviceId, bookingDate, bookingTime, id: { [Op.ne]: booking.id }, status: { [Op.notIn]: ['cancelled', 'no_show', 'waitlisted'] } }
+    });
+    if (duplicate) return res.status(409).json({ message: 'That time was just selected. Please choose another slot.', availableSlots: await getSuggestedSeniorSlots(bookingDate, control) });
+    await booking.update({ bookingDate, bookingTime, status: 'pending', waitlistPosition: null });
+    res.json({ ...booking.toJSON(), message: 'Thank you. Your preferred complimentary appointment slot has been reserved and is awaiting admin verification.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error selecting waitlist slot', error: err.message });
+  }
+};
+
 exports.updateBooking = async (req, res) => {
   try {
     const booking = await Booking.findByPk(req.params.id, { include: [{ model: User, as: 'user', attributes: ['id', 'email', 'fullName'] }, { model: Service, as: 'service', attributes: ['name', 'price'] }] });
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
-    const { status, cancellationReason } = req.body;
-    await booking.update({ status, cancellationReason: cancellationReason || null, cancelledAt: status === 'cancelled' ? new Date() : null, cancelledBy: req.user.id || null });
+    const { status, cancellationReason, bookingDate, bookingTime, waitlistPosition } = req.body;
+    const updates = {
+      ...(status ? { status } : {}),
+      ...(bookingDate ? { bookingDate } : {}),
+      ...(bookingTime ? { bookingTime } : {}),
+      ...(waitlistPosition !== undefined ? { waitlistPosition: waitlistPosition || null } : {}),
+      cancellationReason: cancellationReason || null,
+      cancelledAt: status === 'cancelled' ? new Date() : null,
+      cancelledBy: status === 'cancelled' ? req.user.id : null
+    };
+    await booking.update(updates);
     if (status === 'cancelled' && booking.user) {
       await Notification.create({
         title: 'Booking Cancelled',
