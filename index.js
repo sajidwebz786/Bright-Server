@@ -44,18 +44,39 @@ app.use('/api', apiRoutes);
 
 app.get('/api/health', (req, res) => res.json({ status: 'OK', message: 'Bright Soul API running' }));
 
-sequelize.sync({ alter: true }).then(() => {
-  console.log('Database synced');
-}).catch((err) => {
-  console.error('Sync error:', err.message);
-});
+async function ensureBookingOfferSchema() {
+  // Production previously used a PostgreSQL enum for booking status. Convert it
+  // before sync so the new waitlist value and future statuses remain deploy-safe.
+  await sequelize.query('ALTER TABLE "bookings" ALTER COLUMN "status" TYPE VARCHAR(32) USING "status"::text');
+  const columns = [
+    ['alternatePhone', 'VARCHAR(255)'],
+    ['customerAddress', 'TEXT'],
+    ['caretakerName', 'VARCHAR(255)'],
+    ['caretakerPhone', 'VARCHAR(255)'],
+    ['dateOfBirth', 'DATE'],
+    ['offerType', "VARCHAR(32) DEFAULT 'standard'"],
+    ['originalAmount', 'DOUBLE PRECISION'],
+    ['discountAmount', 'DOUBLE PRECISION DEFAULT 0'],
+    ['payableAmount', 'DOUBLE PRECISION'],
+    ['waitlistPosition', 'INTEGER'],
+    ['aadhaarDocument', 'TEXT'],
+    ['customerPhoto', 'TEXT']
+  ];
+  for (const [name, definition] of columns) {
+    await sequelize.query(`ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "${name}" ${definition}`);
+  }
+}
 
 async function startServer() {
   try {
     await sequelize.authenticate();
     console.log('PostgreSQL connection established');
+    await ensureBookingOfferSchema();
+    await sequelize.sync({ alter: true });
+    console.log('Database synced');
   } catch (err) {
     console.error('Database connection failed:', err.message);
+    process.exit(1);
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => console.log(`Bright Soul API running on http://0.0.0.0:${PORT}`));

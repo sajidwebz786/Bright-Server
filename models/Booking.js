@@ -32,7 +32,7 @@ const Booking = db.sequelize.define('Booking', {
     type: db.Sequelize.TEXT
   },
   status: {
-    type: db.Sequelize.ENUM('pending', 'waitlisted', 'confirmed', 'cancelled', 'completed', 'no_show'),
+    type: db.Sequelize.STRING(32),
     defaultValue: 'pending'
   },
   customerName: {
@@ -62,7 +62,7 @@ const Booking = db.sequelize.define('Booking', {
     type: db.Sequelize.DATEONLY
   },
   offerType: {
-    type: db.Sequelize.ENUM('standard', 'welcome_swedish', 'senior_wellness', 'women_25'),
+    type: db.Sequelize.STRING(32),
     defaultValue: 'standard'
   },
   originalAmount: {
