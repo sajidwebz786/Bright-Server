@@ -483,7 +483,11 @@ exports.createBooking = async (req, res) => {
       customerName: customerName || req.user.fullName,
       customerEmail: customerEmail || req.user.email,
       customerPhone: customerPhone || req.user.phone,
-      alternatePhone, customerAddress, caretakerName, caretakerPhone, dateOfBirth,
+      alternatePhone: alternatePhone || null,
+      customerAddress: customerAddress || null,
+      caretakerName: caretakerName || null,
+      caretakerPhone: caretakerPhone || null,
+      dateOfBirth: dateOfBirth && dateOfBirth !== 'Invalid date' ? dateOfBirth : null,
       aadhaarDocument, customerPhoto, offerType, originalAmount, discountAmount, payableAmount,
       waitlistPosition, notes, status
     });
@@ -505,7 +509,7 @@ exports.createBooking = async (req, res) => {
 
 exports.createOrder = async (req, res) => {
   try {
-    const { bookingId, serviceId, couponId, offerId, couponCode, serviceAmount, discountAmount, totalAmount, services } = req.body;
+    const { bookingId, bookingIds = [], serviceId, couponId, offerId, couponCode, serviceAmount, discountAmount, totalAmount, services } = req.body;
     const requestedServiceIds = [...new Set([serviceId, ...(services || []).map(item => item.serviceId)].filter(Boolean))];
     if (requestedServiceIds.length) {
       const requestedServices = await Service.findAll({ where: { id: requestedServiceIds } });
@@ -516,9 +520,13 @@ exports.createOrder = async (req, res) => {
     }
     const booking = bookingId ? await Booking.findOne({ where: { id: bookingId, userId: req.user.id } }) : null;
     if (bookingId && !booking) return res.status(404).json({ message: 'Booking not found' });
+    const checkoutBookingIds = [...new Set([bookingId, ...bookingIds].map(Number).filter(Boolean))];
+    const checkoutBookings = checkoutBookingIds.length ? await Booking.findAll({ where: { id: checkoutBookingIds, userId: req.user.id } }) : [];
+    if (checkoutBookings.length !== checkoutBookingIds.length) return res.status(404).json({ message: 'One or more bookings were not found' });
     const servicesData = services || [{ serviceId, serviceAmount }];
-    const totalServiceAmount = booking ? Number(booking.originalAmount) : servicesData.reduce((sum, s) => sum + parseFloat(s.serviceAmount || 0), 0);
-    const finalAmount = booking ? Number(booking.payableAmount) : Number(totalAmount || totalServiceAmount);
+    const totalServiceAmount = checkoutBookings.length ? checkoutBookings.reduce((sum, item) => sum + Number(item.originalAmount || 0), 0) : servicesData.reduce((sum, s) => sum + parseFloat(s.serviceAmount || 0), 0);
+    const finalAmount = checkoutBookings.length ? checkoutBookings.reduce((sum, item) => sum + Number(item.payableAmount || 0), 0) : Number(totalAmount || totalServiceAmount);
+    const verifiedDiscountAmount = checkoutBookings.length ? checkoutBookings.reduce((sum, item) => sum + Number(item.discountAmount || 0), 0) : (discountAmount || 0);
     if (finalAmount < 1) return res.status(400).json({ message: 'No payment is required for this booking.' });
     if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) return res.status(503).json({ message: 'Payment gateway is not configured' });
     const razorpay = new (require('razorpay'))({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
@@ -532,7 +540,7 @@ exports.createOrder = async (req, res) => {
     const dbOrder = await Order.create({
       orderId: order.receipt, userId: req.user.id, bookingId, serviceId,
       servicesJson: JSON.stringify(servicesData), serviceAmount: totalServiceAmount,
-      discountAmount: booking ? Number(booking.discountAmount) : (discountAmount || 0), couponCode: couponCode || null, offerId: offerId || null,
+      discountAmount: verifiedDiscountAmount, couponCode: couponCode || null, offerId: offerId || null,
       totalAmount: finalAmount, razorpayOrderId: order.id, status: 'pending'
     });
     if (couponId) {
@@ -622,9 +630,44 @@ exports.verifyPayment = async (req, res) => {
 exports.getMyBookings = async (req, res) => {
   try {
     const bookings = await Booking.findAll({ where: { userId: req.user.id }, include: [{ model: Service, as: 'service' }, { model: Order, as: 'order', include: [{ model: Payment, as: 'payment' }] }], order: [['createdAt', 'DESC']] });
-    res.json(bookings);
+    const visibleBookings = bookings.filter(item =>
+      Number(item.payableAmount) === 0 ||
+      item.order?.status === 'paid' ||
+      ['confirmed', 'completed', 'cancelled', 'no_show', 'waitlisted'].includes(item.status)
+    );
+    res.json(visibleBookings);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching bookings', error: err.message });
+  }
+};
+
+exports.abandonCheckout = async (req, res) => {
+  const transaction = await Booking.sequelize.transaction();
+  try {
+    const bookingIds = [...new Set((req.body.bookingIds || []).map(Number).filter(Boolean))];
+    const orderId = Number(req.body.orderId) || null;
+    if (orderId) {
+      const order = await Order.findOne({ where: { id: orderId, userId: req.user.id }, transaction });
+      if (order && order.status === 'pending') await order.destroy({ transaction });
+    }
+    if (bookingIds.length) {
+      const unpaidBookings = await Booking.findAll({
+        where: { id: bookingIds, userId: req.user.id, status: 'pending' },
+        include: [{ model: Order, as: 'order', required: false }],
+        transaction
+      });
+      for (const booking of unpaidBookings) {
+        if (!booking.order || booking.order.status === 'pending') {
+          if (booking.order) await booking.order.destroy({ transaction });
+          await booking.destroy({ transaction });
+        }
+      }
+    }
+    await transaction.commit();
+    res.json({ message: 'Unpaid checkout removed' });
+  } catch (err) {
+    await transaction.rollback();
+    res.status(500).json({ message: 'Could not remove unpaid checkout', error: err.message });
   }
 };
 
@@ -701,7 +744,7 @@ exports.updateBooking = async (req, res) => {
 
 exports.getOrders = async (req, res) => {
   try {
-    const orders = await Order.findAll({ where: { userId: req.user.id }, include: [{ model: Service, as: 'service' }, { model: Payment, as: 'payment' }, { model: Coupon, as: 'coupon' }, { model: Offer, as: 'offer' }], order: [['createdAt', 'DESC']] });
+    const orders = await Order.findAll({ where: { userId: req.user.id, status: { [Op.in]: ['paid', 'refunded'] } }, include: [{ model: Service, as: 'service' }, { model: Payment, as: 'payment' }, { model: Coupon, as: 'coupon' }, { model: Offer, as: 'offer' }], order: [['createdAt', 'DESC']] });
     res.json(orders);
   } catch (err) {
     res.status(500).json({ message: 'Error fetching orders', error: err.message });
@@ -842,18 +885,20 @@ exports.getCustomerDashboard = async (req, res) => {
       Order.findAll({ where: { userId: req.user.id }, include: [{ model: Service, as: 'service' }, { model: Payment, as: 'payment' }], order: [['createdAt', 'DESC']], limit: 20 }),
       Notification.findAll({ where: { userId: req.user.id }, order: [['createdAt', 'DESC']], limit: 10 })
     ]);
-    const upcoming = bookings.filter(item => item.bookingDate >= today && !['cancelled', 'completed', 'no_show'].includes(item.status));
-    const payments = orders.filter(item => item.payment).map(item => item.payment);
+    const visibleBookings = bookings.filter(item => Number(item.payableAmount) === 0 || item.order?.status === 'paid' || ['confirmed', 'completed', 'cancelled', 'no_show', 'waitlisted'].includes(item.status));
+    const visibleOrders = orders.filter(item => ['paid', 'refunded'].includes(item.status));
+    const upcoming = visibleBookings.filter(item => item.bookingDate >= today && !['cancelled', 'completed', 'no_show'].includes(item.status));
+    const payments = visibleOrders.filter(item => item.payment).map(item => item.payment);
     res.json({
       stats: {
-        totalBookings: bookings.length,
+        totalBookings: visibleBookings.length,
         upcomingBookings: upcoming.length,
-        completedBookings: bookings.filter(item => item.status === 'completed').length,
-        totalPaid: orders.filter(item => item.status === 'paid').reduce((sum, item) => sum + Number(item.totalAmount || 0), 0)
+        completedBookings: visibleBookings.filter(item => item.status === 'completed').length,
+        totalPaid: visibleOrders.filter(item => item.status === 'paid').reduce((sum, item) => sum + Number(item.totalAmount || 0), 0)
       },
       upcoming: upcoming.slice(0, 5),
-      recentBookings: bookings.slice(-8).reverse(),
-      orders,
+      recentBookings: visibleBookings.slice(-8).reverse(),
+      orders: visibleOrders,
       payments,
       notifications
     });
