@@ -5,11 +5,50 @@ const { Op } = require('sequelize');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
-const { sendPaymentWhatsAppNotifications } = require('../services/whatsapp');
+const { sendWhatsAppNotifications, sendPaymentWhatsAppNotifications } = require('../services/whatsapp');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'brightsoul-secret-2026';
 const PAYMENT_TEST_EMAIL = 'sajidwebz@gmail.com';
 const PAYMENT_TEST_SERVICE_NAME = 'Payment Gateway Test Therapy — ₹5';
+
+function bookingCustomerMessage(booking, serviceName, heading, extra = []) {
+  return [
+    'Bright Soul Spa & Salon', heading, '',
+    `Service: ${serviceName || 'Spa service'}`,
+    `Date: ${booking.bookingDate}`,
+    `Time: ${String(booking.bookingTime || '').slice(0, 5)}`,
+    `Status: ${String(booking.status || 'pending').replaceAll('_', ' ')}`,
+    ...extra, '',
+    'Please arrive 15 minutes before your appointment. Thank you for choosing Bright Soul Spa.'
+  ].join('\n');
+}
+
+function bookingAdminMessage(booking, serviceName, heading, extra = []) {
+  return [
+    'Bright Soul Spa & Salon — ADMIN', heading, '',
+    `Booking ID: ${booking.id}`,
+    `Customer: ${booking.customerName || 'Not supplied'}`,
+    `Phone: ${booking.customerPhone || 'Not supplied'}`,
+    `Email: ${booking.customerEmail || 'Not supplied'}`,
+    `Service: ${serviceName || 'Spa service'}`,
+    `Offer: ${String(booking.offerType || 'standard').replaceAll('_', ' ')}`,
+    `Date: ${booking.bookingDate}`,
+    `Time: ${String(booking.bookingTime || '').slice(0, 5)}`,
+    `Amount: ₹${Number(booking.payableAmount || 0).toLocaleString('en-IN')}`,
+    `Status: ${String(booking.status || 'pending').replaceAll('_', ' ')}`,
+    ...(booking.customerAddress ? [`Address: ${booking.customerAddress}`] : []),
+    ...(booking.caretakerName ? [`Caretaker: ${booking.caretakerName} (${booking.caretakerPhone || 'no phone'})`] : []),
+    ...extra
+  ].join('\n');
+}
+
+async function notifyBooking(booking, serviceName, heading, extra = []) {
+  return sendWhatsAppNotifications({
+    customerPhone: booking.customerPhone,
+    customerMessage: bookingCustomerMessage(booking, serviceName, heading, extra),
+    adminMessage: bookingAdminMessage(booking, serviceName, heading, extra)
+  });
+}
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -419,7 +458,8 @@ exports.createBooking = async (req, res) => {
     const {
       serviceId, bookingDate, bookingTime, numberOfPeople, specialRequests, customerName,
       customerEmail, customerPhone, notes, offerType = 'standard', alternatePhone,
-      customerAddress, caretakerName, caretakerPhone, dateOfBirth, aadhaarDocument, customerPhoto
+      customerAddress, caretakerName, caretakerPhone, dateOfBirth, aadhaarDocument, customerPhoto,
+      aadhaarDateOfBirth, aadhaarScanStatus
     } = req.body;
     const service = await Service.findByPk(serviceId);
     if (!service) return res.status(404).json({ message: 'Service not found' });
@@ -437,10 +477,15 @@ exports.createBooking = async (req, res) => {
     if (offerType === 'welcome_swedish' && !(service.category === 'Swedish Massage' && Number(service.duration) === 60)) {
       return res.status(400).json({ message: 'The ₹1,800 welcome offer is valid only on the 60-minute Swedish Massage.' });
     }
+    if (offerType === 'senior_wellness' && !(service.category === 'Swedish Massage' && Number(service.duration) === 45)) {
+      return res.status(400).json({ message: 'The senior citizens offer includes Swedish Massage for 45 minutes only.' });
+    }
     if (offerType === 'senior_wellness') {
-      if (!alternatePhone || !customerAddress || !caretakerName || !caretakerPhone || !dateOfBirth || !aadhaarDocument || !customerPhoto) {
-        return res.status(400).json({ message: 'Senior bookings require date of birth, Aadhaar, photo, address, alternate phone, and caretaker details.' });
+      if (!customerAddress || !caretakerName || !caretakerPhone || !dateOfBirth || !aadhaarDocument || !customerPhoto) {
+        return res.status(400).json({ message: 'Senior bookings require date of birth, Aadhaar, photo, address, and caretaker details.' });
       }
+      if (aadhaarDateOfBirth && aadhaarDateOfBirth !== dateOfBirth) return res.status(400).json({ message: 'The entered date of birth does not match the date detected on the Aadhaar card.' });
+      if (!aadhaarDateOfBirth && aadhaarScanStatus !== 'unreadable') return res.status(400).json({ message: 'Please allow the Aadhaar scan to finish before booking.' });
       const dob = new Date(`${dateOfBirth}T00:00:00`);
       const appointment = new Date(`${bookingDate}T00:00:00`);
       let age = appointment.getFullYear() - dob.getFullYear();
@@ -491,16 +536,24 @@ exports.createBooking = async (req, res) => {
       aadhaarDocument, customerPhoto, offerType, originalAmount, discountAmount, payableAmount,
       waitlistPosition, notes, status
     });
+    const bookingHeading = status === 'waitlisted'
+      ? 'Senior appointment waitlist request received'
+      : payableAmount < 1
+        ? 'Complimentary appointment request received'
+        : 'Booking request received — payment pending';
+    const whatsapp = await notifyBooking(booking, service.name, bookingHeading,
+      payableAmount > 0 ? ['Payment status: Pending'] : ['Payment: Complimentary service']);
     if (status === 'waitlisted') {
       const availableSlots = await getSuggestedSeniorSlots(bookingDate, offerControl);
       return res.status(201).json({
         ...booking.toJSON(),
+        whatsapp,
         capacityFull: true,
         availableSlots,
         message: `Thank you for choosing Bright Soul Spa. The ${offerControl.dailyCapacity} complimentary senior appointments for ${bookingDate} are now filled. Please select one of the next available dates and times below at your convenience.`
       });
     }
-    res.status(201).json(booking);
+    res.status(201).json({ ...booking.toJSON(), whatsapp });
   } catch (err) {
     console.error('Create booking failed:', err);
     res.status(500).json({ message: 'Error creating booking', error: err.message });
@@ -606,7 +659,7 @@ exports.verifyPayment = async (req, res) => {
     const appointmentLines = confirmedBookings.map(item =>
       `${item.service?.name || 'Spa service'} — ${item.bookingDate} at ${String(item.bookingTime).slice(0, 5)}`
     );
-    const paymentMessage = [
+    const customerMessage = [
       'Bright Soul Spa & Salon',
       'Payment and purchase confirmation',
       '',
@@ -620,7 +673,24 @@ exports.verifyPayment = async (req, res) => {
       '',
       'Your payment was successful and your booking is confirmed. Thank you for choosing Bright Soul Spa.'
     ].join('\n');
-    const whatsapp = await sendPaymentWhatsAppNotifications({ customerPhone, message: paymentMessage });
+    const bookingDetails = confirmedBookings.map(item => bookingAdminMessage(item, item.service?.name, 'PAID BOOKING CONFIRMED', [
+      `Payment amount: ₹${Number(dbOrder.totalAmount).toLocaleString('en-IN')}`,
+      `Payment method: ${payment.method || 'Razorpay'}`,
+      `Payment ID: ${razorpay_payment_id}`,
+      `Order ID: ${dbOrder.orderId}`
+    ])).join('\n\n');
+    const adminMessage = bookingDetails || [
+      'Bright Soul Spa & Salon — ADMIN', 'PAYMENT RECEIVED', '',
+      `Customer: ${req.user.fullName}`,
+      `Phone: ${customerPhone || req.user.phone || 'Not supplied'}`,
+      `Email: ${req.user.email || 'Not supplied'}`,
+      `Services: ${serviceNames.join(', ') || 'Spa service'}`,
+      `Amount: ₹${Number(dbOrder.totalAmount).toLocaleString('en-IN')}`,
+      `Method: ${payment.method || 'Razorpay'}`,
+      `Payment ID: ${razorpay_payment_id}`,
+      `Order ID: ${dbOrder.orderId}`
+    ].join('\n');
+    const whatsapp = await sendPaymentWhatsAppNotifications({ customerPhone, customerMessage, adminMessage });
     res.json({ message: 'Payment verified successfully', order: dbOrder, whatsapp });
   } catch (err) {
     res.status(500).json({ message: 'Error verifying payment', error: err.message });
@@ -707,7 +777,8 @@ exports.selectWaitlistSlot = async (req, res) => {
     });
     if (duplicate) return res.status(409).json({ message: 'That time was just selected. Please choose another slot.', availableSlots: await getSuggestedSeniorSlots(bookingDate, control) });
     await booking.update({ bookingDate, bookingTime, status: 'pending', waitlistPosition: null });
-    res.json({ ...booking.toJSON(), message: 'Thank you. Your preferred complimentary appointment slot has been reserved and is awaiting admin verification.' });
+    const whatsapp = await notifyBooking(booking, 'Swedish Massage — 45 Minutes', 'Waitlist appointment slot selected');
+    res.json({ ...booking.toJSON(), whatsapp, message: 'Thank you. Your preferred complimentary appointment slot has been reserved and is awaiting admin verification.' });
   } catch (err) {
     res.status(500).json({ message: 'Error selecting waitlist slot', error: err.message });
   }
@@ -736,7 +807,14 @@ exports.updateBooking = async (req, res) => {
       });
       await sendNotificationEmail(booking.user.email, 'Booking Cancelled', `<h2>Booking Cancelled</h2><p>Your booking for ${booking.bookingDate} at ${booking.bookingTime} has been cancelled by admin.</p>`);
     }
-    res.json({ message: 'Booking updated', booking });
+    const statusLabels = {
+      confirmed: 'Appointment confirmed', cancelled: 'Appointment cancelled',
+      completed: 'Appointment completed', no_show: 'Appointment marked as no-show',
+      pending: 'Appointment awaiting confirmation', waitlisted: 'Appointment waitlisted'
+    };
+    const extra = cancellationReason ? [`Reason: ${cancellationReason}`] : [];
+    const whatsapp = await notifyBooking(booking, booking.service?.name, statusLabels[booking.status] || 'Appointment updated', extra);
+    res.json({ message: 'Booking updated', booking, whatsapp });
   } catch (err) {
     res.status(500).json({ message: 'Error updating booking', error: err.message });
   }

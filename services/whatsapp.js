@@ -19,7 +19,7 @@ async function sendWhatsAppText(to, body) {
     return { sent: false, skipped: true, reason: 'Recipient phone number is missing' };
   }
 
-  const templateName = process.env.WHATSAPP_PAYMENT_TEMPLATE_NAME;
+  const templateName = process.env.WHATSAPP_NOTIFICATION_TEMPLATE_NAME || process.env.WHATSAPP_PAYMENT_TEMPLATE_NAME;
   const payload = templateName ? {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
@@ -53,23 +53,31 @@ async function sendWhatsAppText(to, body) {
   return { sent: true, messageId: result?.messages?.[0]?.id, recipient };
 }
 
-async function sendPaymentWhatsAppNotifications({ customerPhone, message }) {
-  const recipients = [customerPhone, process.env.WHATSAPP_ADMIN_NUMBER]
-    .map(normalizeWhatsAppNumber)
-    .filter((number, index, list) => number && list.indexOf(number) === index);
+async function sendWhatsAppNotifications({ customerPhone, customerMessage, adminMessage }) {
+  const deliveries = [
+    { audience: 'customer', recipient: normalizeWhatsAppNumber(customerPhone), message: customerMessage },
+    { audience: 'admin', recipient: normalizeWhatsAppNumber(process.env.WHATSAPP_ADMIN_NUMBER), message: adminMessage }
+  ].filter(item => item.recipient && item.message)
+    .filter((item, index, list) => list.findIndex(other => other.recipient === item.recipient && other.message === item.message) === index);
 
-  if (!recipients.length) {
-    return [{ sent: false, skipped: true, reason: 'No WhatsApp recipients are configured' }];
-  }
+  if (!deliveries.length) return [{ sent: false, skipped: true, reason: 'No WhatsApp recipients are configured' }];
 
-  return Promise.all(recipients.map(async recipient => {
+  return Promise.all(deliveries.map(async ({ audience, recipient, message }) => {
     try {
-      return await sendWhatsAppText(recipient, message);
+      return { audience, ...await sendWhatsAppText(recipient, message) };
     } catch (error) {
-      console.error(`WhatsApp payment notification failed for ${recipient}:`, error.message);
-      return { sent: false, recipient, reason: error.message };
+      console.error(`WhatsApp ${audience} notification failed for ${recipient}:`, error.message);
+      return { sent: false, audience, recipient, reason: error.message };
     }
   }));
 }
 
-module.exports = { sendPaymentWhatsAppNotifications };
+async function sendPaymentWhatsAppNotifications({ customerPhone, message, customerMessage, adminMessage }) {
+  return sendWhatsAppNotifications({
+    customerPhone,
+    customerMessage: customerMessage || message,
+    adminMessage: adminMessage || message
+  });
+}
+
+module.exports = { sendWhatsAppNotifications, sendPaymentWhatsAppNotifications };
