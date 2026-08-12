@@ -95,6 +95,9 @@ const Booking = db.sequelize.define('Booking', {
   },
   cancellationReason: {
     type: db.Sequelize.TEXT
+  },
+  telegramReminderSentAt: {
+    type: db.Sequelize.DATE
   }
 }, {
   tableName: 'bookings',

@@ -8,5 +8,6 @@ const Offer = require('./Offer');
 const Notification = require('./Notification');
 const Feedback = require('./Feedback');
 const OfferControl = require('./OfferControl');
+const TelegramConnection = require('./TelegramConnection');
 
-module.exports = { User, Service, Booking, Order, Payment, Coupon, Offer, Notification, Feedback, OfferControl };
+module.exports = { User, Service, Booking, Order, Payment, Coupon, Offer, Notification, Feedback, OfferControl, TelegramConnection };

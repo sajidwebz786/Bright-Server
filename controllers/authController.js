@@ -5,7 +5,7 @@ const { Op } = require('sequelize');
 const { validationResult } = require('express-validator');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
-const { sendWhatsAppNotifications, sendPaymentWhatsAppNotifications } = require('../services/whatsapp');
+const { sendTelegramNotifications } = require('../services/telegram');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'brightsoul-secret-2026';
 const PAYMENT_TEST_EMAIL = 'sajidwebz@gmail.com';
@@ -43,8 +43,8 @@ function bookingAdminMessage(booking, serviceName, heading, extra = []) {
 }
 
 async function notifyBooking(booking, serviceName, heading, extra = []) {
-  return sendWhatsAppNotifications({
-    customerPhone: booking.customerPhone,
+  return sendTelegramNotifications({
+    userId: booking.userId,
     customerMessage: bookingCustomerMessage(booking, serviceName, heading, extra),
     adminMessage: bookingAdminMessage(booking, serviceName, heading, extra)
   });
@@ -541,19 +541,19 @@ exports.createBooking = async (req, res) => {
       : payableAmount < 1
         ? 'Complimentary appointment request received'
         : 'Booking request received — payment pending';
-    const whatsapp = await notifyBooking(booking, service.name, bookingHeading,
+    const telegram = await notifyBooking(booking, service.name, bookingHeading,
       payableAmount > 0 ? ['Payment status: Pending'] : ['Payment: Complimentary service']);
     if (status === 'waitlisted') {
       const availableSlots = await getSuggestedSeniorSlots(bookingDate, offerControl);
       return res.status(201).json({
         ...booking.toJSON(),
-        whatsapp,
+        telegram,
         capacityFull: true,
         availableSlots,
         message: `Thank you for choosing Bright Soul Spa. The ${offerControl.dailyCapacity} complimentary senior appointments for ${bookingDate} are now filled. Please select one of the next available dates and times below at your convenience.`
       });
     }
-    res.status(201).json({ ...booking.toJSON(), whatsapp });
+    res.status(201).json({ ...booking.toJSON(), telegram });
   } catch (err) {
     console.error('Create booking failed:', err);
     res.status(500).json({ message: 'Error creating booking', error: err.message });
@@ -690,8 +690,8 @@ exports.verifyPayment = async (req, res) => {
       `Payment ID: ${razorpay_payment_id}`,
       `Order ID: ${dbOrder.orderId}`
     ].join('\n');
-    const whatsapp = await sendPaymentWhatsAppNotifications({ customerPhone, customerMessage, adminMessage });
-    res.json({ message: 'Payment verified successfully', order: dbOrder, whatsapp });
+    const telegram = await sendTelegramNotifications({ userId: req.user.id, customerMessage, adminMessage });
+    res.json({ message: 'Payment verified successfully', order: dbOrder, telegram });
   } catch (err) {
     res.status(500).json({ message: 'Error verifying payment', error: err.message });
   }
@@ -777,8 +777,8 @@ exports.selectWaitlistSlot = async (req, res) => {
     });
     if (duplicate) return res.status(409).json({ message: 'That time was just selected. Please choose another slot.', availableSlots: await getSuggestedSeniorSlots(bookingDate, control) });
     await booking.update({ bookingDate, bookingTime, status: 'pending', waitlistPosition: null });
-    const whatsapp = await notifyBooking(booking, 'Swedish Massage — 45 Minutes', 'Waitlist appointment slot selected');
-    res.json({ ...booking.toJSON(), whatsapp, message: 'Thank you. Your preferred complimentary appointment slot has been reserved and is awaiting admin verification.' });
+    const telegram = await notifyBooking(booking, 'Swedish Massage — 45 Minutes', 'Waitlist appointment slot selected');
+    res.json({ ...booking.toJSON(), telegram, message: 'Thank you. Your preferred complimentary appointment slot has been reserved and is awaiting admin verification.' });
   } catch (err) {
     res.status(500).json({ message: 'Error selecting waitlist slot', error: err.message });
   }
@@ -813,8 +813,8 @@ exports.updateBooking = async (req, res) => {
       pending: 'Appointment awaiting confirmation', waitlisted: 'Appointment waitlisted'
     };
     const extra = cancellationReason ? [`Reason: ${cancellationReason}`] : [];
-    const whatsapp = await notifyBooking(booking, booking.service?.name, statusLabels[booking.status] || 'Appointment updated', extra);
-    res.json({ message: 'Booking updated', booking, whatsapp });
+    const telegram = await notifyBooking(booking, booking.service?.name, statusLabels[booking.status] || 'Appointment updated', extra);
+    res.json({ message: 'Booking updated', booking, telegram });
   } catch (err) {
     res.status(500).json({ message: 'Error updating booking', error: err.message });
   }
@@ -880,13 +880,15 @@ exports.sendNotification = async (req, res) => {
     const { title, message, type, userIds, sendToAll, offerId, couponId } = req.body;
     let notifications = [];
     if (sendToAll) {
-      const users = await User.findAll({ where: { isActive: true }, attributes: ['id', 'email'] });
+      const users = await User.findAll({ where: { isActive: true, isAdmin: false }, attributes: ['id', 'email'] });
       notifications = users.map(u => ({ userId: u.id, title, message, type, offerId: offerId || null, couponId: couponId || null, sentToAll: true, sentByAdminId: req.user.id, status: 'sent' }));
       await Promise.all(users.map(u => sendNotificationEmail(u.email, title, `<h2>${title}</h2><p>${message}</p>`)));
+      await Promise.all(users.map(u => sendTelegramNotifications({ userId: u.id, customerMessage: `Bright Soul Spa & Salon\n\n${title}\n\n${message}`, adminMessage: null })));
     } else if (userIds && userIds.length > 0) {
       notifications = userIds.map(id => ({ userId: id, title, message, type, offerId: offerId || null, couponId: couponId || null, sentToAll: false, sentByAdminId: req.user.id, status: 'sent' }));
       const users = await User.findAll({ where: { id: userIds, isActive: true }, attributes: ['id', 'email'] });
       await Promise.all(users.map(u => sendNotificationEmail(u.email, title, `<h2>${title}</h2><p>${message}</p>`)));
+      await Promise.all(users.map(u => sendTelegramNotifications({ userId: u.id, customerMessage: `Bright Soul Spa & Salon\n\n${title}\n\n${message}`, adminMessage: null })));
     } else {
       return res.status(400).json({ message: 'Either userIds or sendToAll must be provided' });
     }
@@ -929,6 +931,7 @@ exports.createFeedback = async (req, res) => {
     const { name, email, phone, subject, message, kind } = req.body;
     if (!name || !email || !message) return res.status(400).json({ message: 'Name, email, and message are required' });
     const item = await Feedback.create({ name, email, phone, subject, message, kind: kind === 'feedback' ? 'feedback' : 'request' });
+    await sendTelegramNotifications({ userId: null, customerMessage: null, adminMessage: `Bright Soul Spa & Salon — ADMIN\nNew customer ${item.kind}\n\nFrom: ${name}\nEmail: ${email}\nPhone: ${phone || 'Not supplied'}\nSubject: ${subject || 'General'}\n\n${message}` });
     res.status(201).json({ message: 'Your message has been received', item });
   } catch (err) {
     res.status(500).json({ message: 'Error saving feedback', error: err.message });

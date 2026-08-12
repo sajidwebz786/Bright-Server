@@ -1,7 +1,7 @@
 const { sequelize } = require('../config/database');
 
 const defineAssociations = () => {
-  const { User, Service, Booking, Order, Payment, Coupon, Offer, Notification, Feedback } = sequelize.models;
+  const { User, Service, Booking, Order, Payment, Coupon, Offer, Notification, Feedback, TelegramConnection } = sequelize.models;
 
   if (!User || !Service || !Booking || !Order || !Coupon || !Offer || !Notification) {
     console.warn('Some models not loaded yet, skipping associations');
@@ -55,6 +55,9 @@ const defineAssociations = () => {
 
   User.hasMany(Feedback, { foreignKey: 'userId', as: 'feedbackItems' });
   Feedback.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+  User.hasOne(TelegramConnection, { foreignKey: 'userId', as: 'telegramConnection' });
+  TelegramConnection.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
   console.log('Model associations defined');
 };

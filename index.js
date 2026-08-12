@@ -38,7 +38,10 @@ require('./models/associations')();
 
 const authRoutes = require('./routes/auth');
 const apiRoutes = require('./routes/api');
+const { telegramWebhook } = require('./controllers/telegramController');
+const { sendDueAppointmentReminders, configureTelegramWebhook } = require('./services/telegram');
 
+app.post('/api/telegram/webhook', telegramWebhook);
 app.use('/api/auth', authRoutes);
 app.use('/api', apiRoutes);
 
@@ -74,12 +77,23 @@ async function startServer() {
     await ensureBookingOfferSchema();
     await sequelize.sync({ alter: true });
     console.log('Database synced');
+    try {
+      const telegram = await configureTelegramWebhook();
+      if (telegram.configured) console.log(`Telegram webhook configured: ${telegram.url}`);
+      else if (telegram.reason) console.warn(`Telegram webhook skipped: ${telegram.reason}`);
+    } catch (telegramError) {
+      console.error('Telegram webhook configuration failed:', telegramError.message);
+    }
   } catch (err) {
     console.error('Database connection failed:', err.message);
     process.exit(1);
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => console.log(`Bright Soul API running on http://0.0.0.0:${PORT}`));
+  const reminderTimer = setInterval(() => {
+    sendDueAppointmentReminders().catch(err => console.error('Telegram reminder job failed:', err.message));
+  }, 15 * 60 * 1000);
+  reminderTimer.unref();
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`Port ${PORT} is already in use. Please stop the process using it or set PORT to a free port in your .env file.`);
