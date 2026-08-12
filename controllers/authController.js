@@ -481,8 +481,8 @@ exports.createBooking = async (req, res) => {
       return res.status(400).json({ message: 'The senior citizens offer includes Swedish Massage for 45 minutes only.' });
     }
     if (offerType === 'senior_wellness') {
-      if (!customerAddress || !caretakerName || !caretakerPhone || !dateOfBirth || !aadhaarDocument || !customerPhoto) {
-        return res.status(400).json({ message: 'Senior bookings require date of birth, Aadhaar, photo, address, and caretaker details.' });
+      if (!caretakerName || !caretakerPhone || !dateOfBirth || !aadhaarDocument || !customerPhoto) {
+        return res.status(400).json({ message: 'Senior bookings require date of birth, Aadhaar, photo, and caretaker details.' });
       }
       if (aadhaarDateOfBirth && aadhaarDateOfBirth !== dateOfBirth) return res.status(400).json({ message: 'The entered date of birth does not match the date detected on the Aadhaar card.' });
       if (!aadhaarDateOfBirth && aadhaarScanStatus !== 'unreadable') return res.status(400).json({ message: 'Please allow the Aadhaar scan to finish before booking.' });
